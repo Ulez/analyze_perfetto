@@ -13,6 +13,7 @@ def main():
     parser.add_argument("--tid", type=int, help="目标线程TID（可单独使用，或与--pid/--process一起使用）")
     args = parser.parse_args()
 
+
     tp_executable = os.path.expanduser('~/.local/share/perfetto/prebuilts/trace_processor_shell')
     config = TraceProcessorConfig(bin_path=tp_executable)
     tp = TraceProcessor(trace=args.trace_file, config=config)
@@ -208,6 +209,52 @@ def main():
                                 pid_info = f"PID={thread_info[0].pid} (通过TID自动匹配)"
                             print(f"\n  线程信息: {thread_info[0].process_name} ({pid_info}) -> {thread_info[0].thread_name} (TID={args.tid})")
                             print(f"  总CPU时间: {total_ms:.2f}ms (窗口: {w_dur/1e6:.2f}ms)")
+
+                            print(f"\n【5. 线程状态分析 (TID={args.tid})】")
+                            # 构建线程状态分析查询
+                            thread_state_sql = f"""
+                            WITH clipped_states AS (
+                                SELECT
+                                    state,
+                                    MAX(0, MIN(ts + dur, {w_end}) - MAX(ts, {w_start})) as clipped_dur
+                                FROM thread_state
+                                WHERE utid = ({utid_subquery})
+                                AND ts < {w_end} AND ts + dur > {w_start}
+                            ),
+                            state_summary AS (
+                                SELECT
+                                    state,
+                                    SUM(clipped_dur) as total_dur_ns,
+                                    COUNT(*) as occurrences
+                                FROM clipped_states
+                                GROUP BY state
+                            ),
+                            total AS (
+                                SELECT SUM(total_dur_ns) as total_ns FROM state_summary
+                            )
+                            SELECT
+                                state,
+                                total_dur_ns / 1e6 as total_dur_ms,
+                                occurrences,
+                                ROUND(total_dur_ns * 100.0 / (SELECT total_ns FROM total), 2) as percentage
+                            FROM state_summary
+                            ORDER BY total_dur_ns DESC
+                            """
+
+                            try:
+                                state_results = list(tp.query(thread_state_sql))
+                                if state_results:
+                                    print(f"{'状态':<8} {'时间(ms)':<12} {'占比%':<10} {'次数':<8}")
+                                    for r in state_results:
+                                        print(f"{r.state:<8} {r.total_dur_ms:<12.2f} {r.percentage:<10.2f} {r.occurrences:<8}")
+
+                                    # 显示总计
+                                    total_state_ms = sum(r.total_dur_ms for r in state_results)
+                                    print(f"\n  状态总时间: {total_state_ms:.2f}ms (窗口: {w_dur/1e6:.2f}ms)")
+                                else:
+                                    print("  未找到线程状态数据（可能thread_state表不存在或该时间段内无状态数据）")
+                            except Exception as e:
+                                print(f"  线程状态分析失败: {e}")
                         else:
                             if locate_by_pid:
                                 print(f"\n  警告: 未找到PID={args.pid}, TID={args.tid}的线程信息")
