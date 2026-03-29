@@ -9,6 +9,8 @@ def main():
     parser.add_argument("--t1", type=float, help="起始时间 (秒)")
     parser.add_argument("--t2", type=float, help="结束时间 (秒)")
     parser.add_argument("--process", type=str, help="目标进程名")
+    parser.add_argument("--pid", type=int, help="目标进程PID（与--tid一起使用）")
+    parser.add_argument("--tid", type=int, help="目标线程TID（与--pid一起使用）")
     args = parser.parse_args()
 
     tp_executable = os.path.expanduser('~/.local/share/perfetto/prebuilts/trace_processor_shell')
@@ -82,6 +84,76 @@ def main():
         print(f"{'TID':<10} {'占比%':<8} {'总耗时ms':<10} {'调度次数':<8} {'平均ms':<8} {'线程名'}")
         for r in res:
             print(f"{str(r.tid):<10} {r.inner_pct:<8.2f} {r.cpu_ms:<10.2f} {r.count:<8} {r.avg_ms:<8.2f} {r.name}")
+
+    # 4. 指定线程的CPU核心分布分析（需要同时提供pid和tid）
+    if args.pid is not None and args.tid is not None:
+        print(f"\n【4. 线程级CPU核心分布分析 (PID={args.pid}, TID={args.tid})】")
+
+        # 构建线程级CPU分布查询（基于用户提供的SQL示例，适配时间窗口）
+        thread_cpu_dist_sql = f"""
+        WITH ts AS (
+            SELECT *
+            FROM sched_slice
+            WHERE utid = (
+                SELECT utid
+                FROM thread
+                WHERE tid = {args.tid}
+                AND upid = (SELECT upid FROM process WHERE pid = {args.pid})
+            )
+            AND ts < {w_end} AND ts + dur > {w_start}
+        ),
+        ts_clipped AS (
+            SELECT
+                cpu,
+                MAX(0, MIN(ts + dur, {w_end}) - MAX(ts, {w_start})) as clipped_dur
+            FROM ts
+        ),
+        summ AS (
+            SELECT
+                cpu,
+                SUM(clipped_dur) AS cpu_time_ns
+            FROM ts_clipped
+            GROUP BY cpu
+        ),
+        total AS (
+            SELECT SUM(cpu_time_ns) AS total_ns FROM summ
+        )
+        SELECT
+            cpu,
+            cpu_time_ns / 1e6 AS cpu_time_ms,
+            ROUND(cpu_time_ns * 100.0 / (SELECT total_ns FROM total), 2) AS percent
+        FROM summ
+        ORDER BY cpu
+        """
+
+        try:
+            thread_cpu_res = list(tp.query(thread_cpu_dist_sql))
+            if thread_cpu_res:
+                print(f"{'CPU':<6} {'时间(ms)':<12} {'占比%':<10}")
+                total_ms = 0
+                for r in thread_cpu_res:
+                    print(f"{r.cpu:<6} {r.cpu_time_ms:<12.2f} {r.percent:<10.2f}")
+                    total_ms += r.cpu_time_ms
+
+                # 获取线程名称
+                thread_info_sql = f"""
+                SELECT t.name as thread_name, p.name as process_name
+                FROM thread t
+                JOIN process p ON t.upid = p.upid
+                WHERE t.tid = {args.tid} AND p.pid = {args.pid}
+                """
+                thread_info = list(tp.query(thread_info_sql))
+                if thread_info:
+                    print(f"\n  线程信息: {thread_info[0].process_name} (PID={args.pid}) -> {thread_info[0].thread_name} (TID={args.tid})")
+                    print(f"  总CPU时间: {total_ms:.2f}ms (窗口: {w_dur/1e6:.2f}ms)")
+                else:
+                    print(f"\n  警告: 未找到PID={args.pid}, TID={args.tid}的线程信息")
+            else:
+                print(f"  未找到线程 PID={args.pid}, TID={args.tid} 在时间窗口内的调度数据")
+        except Exception as e:
+            print(f"  线程CPU分布分析失败: {e}")
+    elif args.pid is not None or args.tid is not None:
+        print("\n  警告: 需要同时提供--pid和--tid参数才能进行线程级CPU分布分析")
 
 if __name__ == "__main__":
     main()
