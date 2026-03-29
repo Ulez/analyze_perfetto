@@ -61,9 +61,58 @@ def main():
     for r in tp.query(top_proc_sql):
         print(f"{str(r.pid):<10} {r.cpu_pct:<10.2f} {r.name}")
 
-    # 3. 线程深度分析 
+    # 3. Top 10 线程CPU占用
+    print("\n【3. Top 10 线程CPU占用】")
+    top_thread_sql = f"""
+    WITH clipped_sched AS (
+        SELECT
+            utid,
+            MAX(0, MIN(ts + dur, {w_end}) - MAX(ts, {w_start})) as clipped_dur
+        FROM sched_slice
+        WHERE ts < {w_end} AND ts + dur > {w_start}
+    ),
+    thread_stats AS (
+        SELECT
+            t.tid,
+            p.name as process_name,
+            t.name as thread_name,
+            COUNT(*) as count,
+            SUM(cs.clipped_dur) as dur_sum_ns,
+            AVG(cs.clipped_dur) as dur_avg_ns
+        FROM clipped_sched cs
+        JOIN thread t USING(utid)
+        JOIN process p USING(upid)
+        WHERE t.name NOT LIKE 'swapper%'
+        GROUP BY t.utid
+        HAVING SUM(cs.clipped_dur) > 0
+    ),
+    total_sum AS (
+        SELECT SUM(dur_sum_ns) as total_ns FROM thread_stats
+    )
+    SELECT
+        tid,
+        process_name,
+        thread_name,
+        count,
+        dur_sum_ns / 1e6 as dur_sum_ms,
+        CASE
+            WHEN (SELECT total_ns FROM total_sum) > 0
+            THEN dur_sum_ns * 100.0 / (SELECT total_ns FROM total_sum)
+            ELSE 0.0
+        END as percentage,
+        dur_avg_ns / 1e6 as dur_avg_ms
+    FROM thread_stats
+    ORDER BY dur_sum_ns DESC
+    LIMIT 10
+    """
+
+    print(f"{'TID':<10} {'进程名':<20} {'线程名':<20} {'次数':<8} {'总时长(ms)':<15} {'占比%':<12} {'平均时长(ms)':<15}")
+    for r in tp.query(top_thread_sql):
+        print(f"{str(r.tid):<10} {r.process_name[:18]:<20} {r.thread_name[:18]:<20} {r.count:<8} {r.dur_sum_ms:<15.2f} {r.percentage:<12.2f} {r.dur_avg_ms:<15.2f}")
+
+    # 4. 线程深度分析 
     if args.process:
-        print(f"\n【3. 进程 '{args.process}' 线程深度分析 (进程内占比)】")
+        print(f"\n【4. 进程 '{args.process}' 线程深度分析 (进程内占比)】")
         thread_sql = f"""
         WITH target_process AS (SELECT upid FROM process WHERE name = '{args.process}' LIMIT 1),
         total_cpu_time AS (
@@ -95,7 +144,7 @@ def main():
 
         if locate_by_pid:
             # 方式1: 使用pid+tid定位
-            print(f"\n【4. 线程级CPU核心分布分析 (PID={args.pid}, TID={args.tid})】")
+            print(f"\n【5. 线程级CPU核心分布分析 (PID={args.pid}, TID={args.tid})】")
 
             # 构建线程定位条件
             utid_subquery = f"""
@@ -115,7 +164,7 @@ def main():
 
         elif locate_by_process:
             # 方式2: 使用process+tid定位
-            print(f"\n【4. 线程级CPU核心分布分析 (进程='{args.process}', TID={args.tid})】")
+            print(f"\n【5. 线程级CPU核心分布分析 (进程='{args.process}', TID={args.tid})】")
 
             # 构建线程定位条件（使用进程名查找）
             utid_subquery = f"""
@@ -136,7 +185,7 @@ def main():
 
         elif locate_by_tid_only:
             # 方式3: 仅使用tid定位（TID在系统中唯一）
-            print(f"\n【4. 线程级CPU核心分布分析 (TID={args.tid})】")
+            print(f"\n【5. 线程级CPU核心分布分析 (TID={args.tid})】")
 
             # 构建线程定位条件（仅通过TID，理论上TID唯一）
             utid_subquery = f"""
@@ -210,7 +259,7 @@ def main():
                             print(f"\n  线程信息: {thread_info[0].process_name} ({pid_info}) -> {thread_info[0].thread_name} (TID={args.tid})")
                             print(f"  总CPU时间: {total_ms:.2f}ms (窗口: {w_dur/1e6:.2f}ms)")
 
-                            print(f"\n【5. 线程状态分析 (TID={args.tid})】")
+                            print(f"\n【6. 线程状态分析 (TID={args.tid})】")
                             # 构建线程状态分析查询
                             thread_state_sql = f"""
                             WITH clipped_states AS (
