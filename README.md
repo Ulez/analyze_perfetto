@@ -17,7 +17,7 @@
 - Python 3.7+
 - 建议使用虚拟环境
 
-### 2. 创建虚拟环境并安装依赖
+### 2. 依赖安装
 ```bash
 # 创建虚拟环境
 python3 -m venv .venv
@@ -31,6 +31,72 @@ source .venv/bin/activate
 # 安装依赖
 pip install perfetto pandas numpy plotille
 ```
+
+### 3. Perfetto Trace Processor配置
+本工具依赖 `trace_processor_shell` 来解析Perfetto trace文件。`perfetto` Python包会自动下载并管理此工具。
+
+#### 自动下载（推荐）
+首次运行 `ap.py` 时，`perfetto` 库会自动从Google服务器下载对应平台的 `trace_processor_shell`，保存到：
+- **Linux/macOS**: `~/.local/share/perfetto/prebuilts/trace_processor_shell`
+- **Windows**: `%LOCALAPPDATA%\perfetto\prebuilts\trace_processor_shell.exe`
+
+**注意**：自动下载需要网络连接。如果遇到网络问题，请参考手动安装方法。
+
+#### 手动安装（离线环境或网络问题）
+1. 访问 [Perfetto Releases页面](https://github.com/google/perfetto/releases)
+2. 下载对应平台的 `trace_processor_shell`：
+   - **Linux**: `trace_processor_shell-linux`
+   - **macOS**: `trace_processor_shell-darwin`
+   - **Windows**: `trace_processor_shell-windows.exe`
+3. 重命名为 `trace_processor_shell`（Windows为 `trace_processor_shell.exe`）
+4. 放置到正确目录：
+   ```bash
+   # Linux/macOS
+   mkdir -p ~/.local/share/perfetto/prebuilts/
+   mv trace_processor_shell ~/.local/share/perfetto/prebuilts/
+   chmod +x ~/.local/share/perfetto/prebuilts/trace_processor_shell
+
+   # Windows
+   mkdir %LOCALAPPDATA%\perfetto\prebuilts
+   move trace_processor_shell-windows.exe %LOCALAPPDATA%\perfetto\prebuilts\trace_processor_shell.exe
+   ```
+
+#### 配置验证
+完成手动安装后，可以通过以下方式验证配置：
+
+```bash
+# 1. 检查文件是否存在并具有可执行权限
+ls -la ~/.local/share/perfetto/prebuilts/trace_processor_shell
+# 应该显示类似：-rwxr-xr-x  1 user  staff  ... trace_processor_shell
+
+# 2. 测试Perfetto库导入
+python -c "from perfetto.trace_processor import TraceProcessor; print('Perfetto导入成功')"
+
+# 3. 运行简单trace分析测试（可选）
+python ap.py --help
+```
+
+如果文件已正确放置但工具仍无法运行，请检查：
+1. **文件权限**：确保 `chmod +x` 已执行
+2. **文件路径**：确认文件在正确目录且文件名正确
+3. **平台匹配**：下载的版本是否与操作系统匹配
+
+#### 使用自定义路径（高级）
+如需使用非标准路径的 `trace_processor_shell`，可以修改 `ap.py` 第17行：
+```python
+# 默认路径
+tp_executable = os.path.expanduser('~/.local/share/perfetto/prebuilts/trace_processor_shell')
+
+# 修改为自定义路径，例如：
+# tp_executable = '/path/to/your/trace_processor_shell'
+```
+
+#### 常见安装问题
+1. **网络连接失败**：手动下载并放置到正确目录
+2. **权限问题**：确保 `trace_processor_shell` 有可执行权限
+3. **版本不匹配**：确保 `perfetto` Python包与 `trace_processor_shell` 版本兼容
+4. **文件不存在**：检查路径和文件名是否正确
+5. **平台不匹配**：下载的版本是否与操作系统匹配（如macOS下载darwin版本）
 
 ## 使用方法
 
@@ -178,6 +244,13 @@ MAX(0, MIN(ts + dur, w_end) - MAX(ts, w_start))
 
 ## 常见问题
 
+### Q: 运行时出现"无法下载trace_processor_shell"错误怎么办？
+A: 这通常是由于网络连接问题导致无法从Google服务器下载。请尝试：
+1. **手动下载**：参考[Perfetto Trace Processor配置](#3-perfetto-trace-processor配置)部分的手动安装方法
+2. **检查网络**：确保可以访问 `https://github.com/google/perfetto/releases`
+3. **使用代理**：如有需要，配置合适的网络代理
+4. **验证权限**：确保目标目录有写入权限
+
 ### Q: 为什么Top 10进程的结果与其他工具不同？
 A: 本工具使用精确的时间窗口裁剪算法，计算调度片段在指定时间窗口内的重叠部分，而其他工具可能只计算完全在窗口内的片段或使用不同的分母。
 
@@ -197,11 +270,3 @@ A: 这可能是因为trace文件没有记录线程状态信息。请确保在录
 - 支持系统负载、进程、线程三级分析
 - 支持时间窗口、进程名、PID、TID等多种参数组合
 - 自动下载并配置Perfetto Trace Processor
-
-## 许可证
-
-本项目采用MIT许可证。详见LICENSE文件（如有）。
-
-## 贡献
-
-欢迎提交Issue和Pull Request来改进本工具。
