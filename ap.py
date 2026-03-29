@@ -1,6 +1,7 @@
 import argparse
 import sys
-from perfetto.trace_processor import TraceProcessor
+import os
+from perfetto.trace_processor import TraceProcessor, TraceProcessorConfig
 
 def main():
     parser = argparse.ArgumentParser(description="Perfetto Trace 自动化 CPU 负载分析工具")
@@ -15,30 +16,43 @@ def main():
         print("错误: t1 必须小于 t2")
         sys.exit(1)
 
-    print(f"正在加载 Trace: {args.trace_file} ...")
-    tp = TraceProcessor(trace=args.trace_file)
+    tp_executable = os.path.expanduser('~/.local/share/perfetto/prebuilts/trace_processor_shell')
+    
+    if not os.path.exists(tp_executable):
+        print(f"错误: 找不到解析引擎: {tp_executable}")
+        sys.exit(1)
+
+    print(f"正在加载 Trace (使用本地引擎): {args.trace_file} ...")
+    
+    try:
+        config = TraceProcessorConfig(bin_path=tp_executable)
+        tp = TraceProcessor(trace=args.trace_file, config=config)
+    except Exception as e:
+        print(f"解析 Trace 失败: {e}")
+        sys.exit(1)
 
     # 1. 获取 Trace 基础时间边界
-    bounds = tp.query_dict("SELECT start_ts, end_ts FROM trace_bounds")[0]
-    trace_start_ts = bounds['start_ts']
-    trace_end_ts = bounds['end_ts']
+    # 注意：新版 perfetto 库使用 query()
+    res_bounds = tp.query("SELECT start_ts, end_ts FROM trace_bounds")
+    for row in res_bounds:
+        trace_start_ts = row.start_ts
+        trace_end_ts = row.end_ts
+        break
 
     # 2. 计算相对时间的纳秒绝对值
     w_start = trace_start_ts + int(args.t1 * 1e9)
     w_end = trace_start_ts + int(args.t2 * 1e9)
     
     if w_start > trace_end_ts or w_end < trace_start_ts:
-        print("错误: 指定的时间窗口超出了 Trace 的实际时间范围")
+        print(f"错误: 时间窗口 [{args.t1}s, {args.t2}s] 超出 Trace 范围")
         sys.exit(1)
         
     w_start = max(w_start, trace_start_ts)
     w_end = min(w_end, trace_end_ts)
     w_dur = w_end - w_start
 
-    print(f"分析时间窗口: {args.t1}s - {args.t2}s (持续 {w_dur / 1e9:.3f} 秒)\n")
+    print(f"分析窗口: {args.t1}s -> {args.t2}s (持续 {w_dur / 1e9:.3f} 秒)\n")
 
-    # 3. 构建核心时间裁剪 CTE (Common Table Expression)
-    # 逻辑: 过滤掉不在窗口内的 sched，并严格将 ts 和 dur 裁剪到窗口边界内
     clipped_sched_cte = f"""
     WITH clipped_sched AS (
         SELECT 
@@ -50,31 +64,26 @@ def main():
     )
     """
 
-    # --- 任务 A: 计算系统总 CPU 负载 ---
-    # 获取 CPU 核心数
-    cpus_result = tp.query_dict("SELECT COUNT(DISTINCT cpu) as num_cpus FROM sched")
-    num_cpus = cpus_result[0]['num_cpus'] if cpus_result else 8
+    # --- A: 系统整体负载 ---
+    res_cpus = tp.query("SELECT COUNT(DISTINCT cpu) as n FROM sched")
+    num_cpus = next(res_cpus).n or 8
 
-    sys_load_query = clipped_sched_cte + f"""
-    SELECT SUM(c_dur) as active_time_ns
-    FROM clipped_sched
-    """
-    sys_load_res = tp.query_dict(sys_load_query)[0]
-    total_active_ns = sys_load_res['active_time_ns'] or 0
-    # 100% = 1个核心跑满。系统总上限为 num_cpus * 100%
+    sys_load_query = clipped_sched_cte + "SELECT SUM(c_dur) as active_ns FROM clipped_sched"
+    res_load = tp.query(sys_load_query)
+    total_active_ns = next(res_load).active_ns or 0
     overall_load = (total_active_ns / w_dur) * 100 
     
-    print("-" * 50)
-    print(f"【系统整体负载】")
-    print(f"总活动核心数: {overall_load / 100:.2f} 核心 (共 {num_cpus} 核心)")
-    print(f"整体 CPU 使用率: {overall_load / num_cpus:.2f} % (平均每个核心)")
-    print("-" * 50)
+    print("=" * 60)
+    print(f"【1. 系统整体负载】")
+    print(f"活动核心当量: {overall_load / 100:.2f} / {num_cpus} Cores")
+    print(f"平均 CPU 使用率: {overall_load / num_cpus:.2f} %")
+    print("=" * 60)
 
-    # --- 任务 B: 各进程 TOP CPU 占用 ---
+    # --- B: Top 10 进程 ---
     top_proc_query = clipped_sched_cte + f"""
     SELECT 
-        IFNULL(process.name, 'Unknown') as process_name,
-        process.pid,
+        IFNULL(process.name, 'Unknown') as name,
+        process.pid as pid,
         SUM(c_dur) / CAST({w_dur} AS FLOAT) * 100 as cpu_pct
     FROM clipped_sched
     JOIN thread USING (utid)
@@ -83,17 +92,16 @@ def main():
     ORDER BY cpu_pct DESC
     LIMIT 10
     """
-    print("\n【Top 10 进程 CPU 占用 (100% = 1个核心满载)】")
-    print(f"{'PID':<10} {'CPU %':<10} {'进程名'}")
-    for row in tp.query_dict(top_proc_query):
-        print(f"{str(row['pid']):<10} {row['cpu_pct']:<10.2f} {row['process_name']}")
-    print("-" * 50)
+    print("\n【2. Top 10 进程占用 (100% = 1个核心满载)】")
+    print(f"{'PID':<10} {'CPU %':<12} {'进程名'}")
+    for row in tp.query(top_proc_query):
+        print(f"{str(row.pid):<10} {row.cpu_pct:<12.2f} {row.name}")
 
-    # --- 任务 C: 指定进程的各线程 CPU 占用 ---
+    # --- C: 指定进程的线程分析 ---
     target_threads_query = clipped_sched_cte + f"""
     SELECT 
-        thread.name as thread_name,
-        thread.tid,
+        thread.name as name,
+        thread.tid as tid,
         SUM(c_dur) / CAST({w_dur} AS FLOAT) * 100 as cpu_pct
     FROM clipped_sched
     JOIN thread USING (utid)
@@ -102,15 +110,18 @@ def main():
     GROUP BY thread.utid
     ORDER BY cpu_pct DESC
     """
-    print(f"\n【指定进程 '{args.process}' 的线程 CPU 占用】")
-    target_res = tp.query_dict(target_threads_query)
-    if not target_res:
-        print(f"  未在时间窗口内找到进程 '{args.process}' 或该进程在此期间休眠。")
-    else:
-        print(f"{'TID':<10} {'CPU %':<10} {'线程名'}")
-        for row in target_res:
-            print(f"{str(row['tid']):<10} {row['cpu_pct']:<10.2f} {row['thread_name']}")
-    print("-" * 50)
+    print(f"\n【3. 进程 '{args.process}' 线程细节】")
+    res_threads = tp.query(target_threads_query)
+    found = False
+    for row in res_threads:
+        if not found:
+            print(f"{'TID':<10} {'CPU %':<12} {'线程名'}")
+            found = True
+        print(f"{str(row.tid):<10} {row.cpu_pct:<12.2f} {row.name}")
+    
+    if not found:
+        print(f"  未找到进程 '{args.process}' 的相关数据。")
+    print("=" * 60)
 
 if __name__ == "__main__":
     main()
