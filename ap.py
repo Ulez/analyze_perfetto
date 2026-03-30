@@ -108,7 +108,7 @@ def main():
 
     print(f"{'TID':<10} {'进程名':<20} {'线程名':<20} {'次数':<8} {'总时长(ms)':<15} {'占比%':<12} {'平均时长(ms)':<15}")
     for r in tp.query(top_thread_sql):
-        print(f"{str(r.tid):<10} {r.process_name[:18]:<20} {r.thread_name[:18]:<20} {r.count:<8} {r.dur_sum_ms:<15.2f} {r.percentage:<12.2f} {r.dur_avg_ms:<15.2f}")
+        print(f"{str(r.tid):<10} {r.process_name[:18]:<20}   {r.thread_name[:18]:<20}   {r.count:<8}   {r.dur_sum_ms:<15.2f}   {r.percentage:<12.2f}   {r.dur_avg_ms:<15.2f}")
 
     # 4. 线程深度分析 
     if args.process:
@@ -133,7 +133,7 @@ def main():
         res = tp.query(thread_sql)
         print(f"{'TID':<10} {'占比%':<8} {'总耗时ms':<10} {'调度次数':<8} {'平均ms':<8} {'线程名'}")
         for r in res:
-            print(f"{str(r.tid):<10} {r.inner_pct:<8.2f} {r.cpu_ms:<10.2f} {r.count:<8} {r.avg_ms:<8.2f} {r.name}")
+            print(f"{str(r.tid):<10}   {r.inner_pct:<8.2f}   {r.cpu_ms:<10.2f}   {r.count:<8}   {r.avg_ms:<8.2f} {r.name}")
 
     # 4. 指定线程的CPU核心分布分析（支持pid+tid、process+tid或仅tid三种组合）
     if args.tid is not None:
@@ -276,10 +276,10 @@ def main():
             try:
                 thread_cpu_res = list(tp.query(thread_cpu_dist_sql))
                 if thread_cpu_res:
-                    print(f"{'CPU':<6} {'时间(ms)':<12} {'占比%':<10}")
+                    print(f"{'CPU':<6}  {'时间(ms)':<12}  {'占比%':<10}")
                     total_ms = 0
                     for r in thread_cpu_res:
-                        print(f"{r.cpu:<6} {r.cpu_time_ms:<12.2f} {r.percent:<10.2f}")
+                        print(f"{r.cpu:<6}   {r.cpu_time_ms:<12.2f}   {r.percent:<10.2f}")
                         total_ms += r.cpu_time_ms
 
                     # 获取线程名称
@@ -331,7 +331,7 @@ def main():
                                 if state_results:
                                     print(f"{'状态':<8} {'时间(ms)':<12} {'占比%':<10} {'次数':<8}")
                                     for r in state_results:
-                                        print(f"{r.state:<8} {r.total_dur_ms:<12.2f} {r.percentage:<10.2f} {r.occurrences:<8}")
+                                        print(f"{r.state:<8}   {r.total_dur_ms:<12.2f}   {r.percentage:<10.2f}   {r.occurrences:<8}")
 
                                     # 显示总计
                                     total_state_ms = sum(r.total_dur_ms for r in state_results)
@@ -382,7 +382,7 @@ def main():
                                             if blocked_results:
                                                 print(f"{'阻塞函数':<30} {'时间(ms)':<12} {'占比%':<10} {'次数':<8} {'平均(µs)':<10} {'最长(µs)':<10}")
                                                 for r in blocked_results:
-                                                    print(f"{r.blocked_function[:28]:<30} {r.total_dur_ms:<12.2f} {r.percentage:<10.2f} {r.occurrences:<8} {r.avg_us:<10.2f} {r.max_us:<10.2f}")
+                                                    print(f"{r.blocked_function[:28]:<30}    {r.total_dur_ms:<12.2f}    {r.percentage:<10.2f}  {r.occurrences:<8}     {r.avg_us:<10.2f} {r.max_us:<10.2f}")
 
                                                 # 显示阻塞函数总计
                                                 total_blocked_ms = sum(r.total_dur_ms for r in blocked_results)
