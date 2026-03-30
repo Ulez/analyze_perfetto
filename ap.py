@@ -26,7 +26,7 @@ def main():
 
     print(f"分析窗口: {(w_start-bounds.start_ts)/1e9:.3f}s -> {(w_end-bounds.start_ts)/1e9:.3f}s\n")
 
-    # 1. 系统负载 (基于你提供的逻辑，适配窗口)
+    # 1. 系统负载 (适配窗口)
     sys_sql = f"""
     SELECT 
         (SUM(c_dur) * 100.0) / ({w_dur} * (SELECT COUNT(DISTINCT cpu) FROM cpu)) as load
@@ -154,9 +154,21 @@ def main():
                 AND upid = (SELECT upid FROM process WHERE pid = {args.pid})
             """
 
-            # 线程信息查询
+            # 线程信息查询（包含优先级）
             thread_info_sql = f"""
-                SELECT t.name as thread_name, p.name as process_name, p.pid
+                SELECT
+                    t.name as thread_name,
+                    p.name as process_name,
+                    p.pid,
+                    COALESCE(
+                        (SELECT AVG(s.priority)
+                         FROM sched_slice s
+                         WHERE s.utid = t.utid
+                           AND s.ts < {w_end}
+                           AND s.ts + s.dur > {w_start}
+                        ),
+                        'N/A'
+                    ) as avg_priority
                 FROM thread t
                 JOIN process p ON t.upid = p.upid
                 WHERE t.tid = {args.tid} AND p.pid = {args.pid}
@@ -174,9 +186,21 @@ def main():
                 AND upid = (SELECT upid FROM process WHERE name = '{args.process}' LIMIT 1)
             """
 
-            # 线程信息查询
+            # 线程信息查询（包含优先级）
             thread_info_sql = f"""
-                SELECT t.name as thread_name, p.name as process_name, p.pid
+                SELECT
+                    t.name as thread_name,
+                    p.name as process_name,
+                    p.pid,
+                    COALESCE(
+                        (SELECT AVG(s.priority)
+                         FROM sched_slice s
+                         WHERE s.utid = t.utid
+                           AND s.ts < {w_end}
+                           AND s.ts + s.dur > {w_start}
+                        ),
+                        'N/A'
+                    ) as avg_priority
                 FROM thread t
                 JOIN process p ON t.upid = p.upid
                 WHERE t.tid = {args.tid}
@@ -195,9 +219,21 @@ def main():
                 LIMIT 1
             """
 
-            # 线程信息查询
+            # 线程信息查询（包含优先级）
             thread_info_sql = f"""
-                SELECT t.name as thread_name, p.name as process_name, p.pid
+                SELECT
+                    t.name as thread_name,
+                    p.name as process_name,
+                    p.pid,
+                    COALESCE(
+                        (SELECT AVG(s.priority)
+                         FROM sched_slice s
+                         WHERE s.utid = t.utid
+                           AND s.ts < {w_end}
+                           AND s.ts + s.dur > {w_start}
+                        ),
+                        'N/A'
+                    ) as avg_priority
                 FROM thread t
                 JOIN process p ON t.upid = p.upid
                 WHERE t.tid = {args.tid}
@@ -256,7 +292,7 @@ def main():
                                 pid_info = f"进程='{args.process}'"
                             else:  # locate_by_tid_only
                                 pid_info = f"PID={thread_info[0].pid} (通过TID自动匹配)"
-                            print(f"\n  线程信息: {thread_info[0].process_name} ({pid_info}) -> {thread_info[0].thread_name} (TID={args.tid})")
+                            print(f"\n  线程信息: {thread_info[0].process_name} ({pid_info}) -> {thread_info[0].thread_name} (TID={args.tid}, 优先级: {thread_info[0].avg_priority})")
                             print(f"  总CPU时间: {total_ms:.2f}ms (窗口: {w_dur/1e6:.2f}ms)")
 
                             print(f"\n【6. 线程状态分析 (TID={args.tid})】")
