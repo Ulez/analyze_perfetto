@@ -336,6 +336,62 @@ def main():
                                     # 显示总计
                                     total_state_ms = sum(r.total_dur_ms for r in state_results)
                                     print(f"\n  状态总时间: {total_state_ms:.2f}ms (窗口: {w_dur/1e6:.2f}ms)")
+
+                                    # 检查是否有D状态数据，如果有则进行阻塞函数分析
+                                    d_state_data = [r for r in state_results if r.state == 'D']
+                                    if d_state_data:
+                                        print(f"\n【7. 线程阻塞函数分析 (TID={args.tid})】")
+                                        # 构建阻塞函数分析查询
+                                        blocked_function_sql = f"""
+                                        WITH clipped_states AS (
+                                            SELECT
+                                                blocked_function,
+                                                MAX(0, MIN(ts + dur, {w_end}) - MAX(ts, {w_start})) as clipped_dur
+                                            FROM thread_state
+                                            WHERE utid = ({utid_subquery})
+                                            AND ts < {w_end} AND ts + dur > {w_start}
+                                            AND state = 'D'
+                                            AND blocked_function IS NOT NULL
+                                        ),
+                                        function_summary AS (
+                                            SELECT
+                                                blocked_function,
+                                                SUM(clipped_dur) as total_dur_ns,
+                                                COUNT(*) as occurrences,
+                                                AVG(clipped_dur) as avg_dur_ns,
+                                                MAX(clipped_dur) as max_dur_ns
+                                            FROM clipped_states
+                                            GROUP BY blocked_function
+                                        ),
+                                        total_d AS (
+                                            SELECT SUM(total_dur_ns) as total_ns FROM function_summary
+                                        )
+                                        SELECT
+                                            blocked_function,
+                                            total_dur_ns / 1e6 as total_dur_ms,
+                                            occurrences,
+                                            ROUND(total_dur_ns * 100.0 / (SELECT total_ns FROM total_d), 2) as percentage,
+                                            ROUND(avg_dur_ns / 1e3, 2) as avg_us,
+                                            ROUND(max_dur_ns / 1e3, 2) as max_us
+                                        FROM function_summary
+                                        ORDER BY total_dur_ns DESC
+                                        """
+
+                                        try:
+                                            blocked_results = list(tp.query(blocked_function_sql))
+                                            if blocked_results:
+                                                print(f"{'阻塞函数':<30} {'时间(ms)':<12} {'占比%':<10} {'次数':<8} {'平均(µs)':<10} {'最长(µs)':<10}")
+                                                for r in blocked_results:
+                                                    print(f"{r.blocked_function[:28]:<30} {r.total_dur_ms:<12.2f} {r.percentage:<10.2f} {r.occurrences:<8} {r.avg_us:<10.2f} {r.max_us:<10.2f}")
+
+                                                # 显示阻塞函数总计
+                                                total_blocked_ms = sum(r.total_dur_ms for r in blocked_results)
+                                                d_state_total = next((r.total_dur_ms for r in d_state_data), 0)
+                                                print(f"\n  阻塞函数总时间: {total_blocked_ms:.2f}ms (占D状态: {total_blocked_ms/d_state_total*100:.1f}%)")
+                                            else:
+                                                print("  未找到阻塞函数数据（D状态可能没有记录阻塞函数）")
+                                        except Exception as e:
+                                            print(f"  阻塞函数分析失败: {e}")
                                 else:
                                     print("  未找到线程状态数据（可能thread_state表不存在或该时间段内无状态数据）")
                             except Exception as e:
